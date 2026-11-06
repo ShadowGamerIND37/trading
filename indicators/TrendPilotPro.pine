@@ -1,0 +1,306 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  TREND PILOT PRO
+//  Buy/Sell arrows + Entry / Stop-Loss / Target lines
+//  Engines: Supertrend · UT Bot (ATR trailing stop) · EMA crossover
+//  Educational tool. Not financial advice.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Trend Pilot Pro [Buy/Sell · Entry · SL · Targets]", "TPP", overlay = true,
+     max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ══════════════════════════════ 1 · INPUTS ══════════════════════════════════
+gE = "1 · Signal engine"
+engine    = input.string("Supertrend", "Engine", options = ["Supertrend", "UT Bot (ATR trail)", "EMA crossover"], group = gE)
+closeOnly = input.bool(true, "Signals on bar close only (no repaint)", group = gE)
+cooldown  = input.int(3, "Cooldown between signals (bars)", minval = 0, maxval = 200, group = gE)
+
+stAtrLen   = input.int(10, "Supertrend · ATR length", minval = 1, group = gE)
+stFactor   = input.float(3.0, "Supertrend · factor", minval = 0.5, maxval = 20.0, step = 0.1, group = gE)
+utKey      = input.float(3.0, "UT Bot · key value", minval = 0.5, maxval = 20.0, step = 0.5, group = gE)
+utPer      = input.int(10, "UT Bot · ATR length", minval = 1, group = gE)
+emaFastLen = input.int(21, "EMA cross · fast length", minval = 1, group = gE)
+emaSlowLen = input.int(55, "EMA cross · slow length", minval = 2, group = gE)
+
+gF = "2 · Filters"
+useEmaF = input.bool(true, "Trade only in EMA direction", group = gF)
+emaFLen = input.int(200, "Filter EMA length", minval = 5, maxval = 1000, group = gF)
+useAdx  = input.bool(false, "ADX strength filter", group = gF)
+adxLen  = input.int(14, "ADX length", minval = 2, group = gF)
+adxMin  = input.float(20.0, "ADX minimum", minval = 1.0, maxval = 100.0, step = 1.0, group = gF)
+
+gR = "3 · Entry / stop / targets"
+stopMode   = input.string("ATR stop", "Stop placement", options = ["ATR stop", "Engine stop", "Swing stop"], group = gR)
+atrRiskLen = input.int(14, "ATR length (risk)", minval = 1, group = gR)
+slAtr      = input.float(1.5, "Stop = ATR ×", minval = 0.1, maxval = 10.0, step = 0.1, group = gR)
+swingLook  = input.int(8, "Swing lookback (bars)", minval = 2, maxval = 100, group = gR)
+r1         = input.float(1.0, "Target 1 (× risk)", minval = 0.1, maxval = 50.0, step = 0.1, group = gR)
+r2         = input.float(2.0, "Target 2 (× risk)", minval = 0.1, maxval = 50.0, step = 0.1, group = gR)
+r3         = input.float(3.0, "Target 3 (× risk)", minval = 0.1, maxval = 50.0, step = 0.1, group = gR)
+lineExt    = input.int(15, "Extend lines right (bars)", minval = 0, maxval = 300, group = gR)
+
+gV = "4 · Visuals"
+showSt     = input.bool(true, "Plot engine line", group = gV)
+showArrows = input.bool(true, "Show BUY / SELL arrows", group = gV)
+showLines  = input.bool(true, "Show entry / SL / target lines", group = gV)
+showLabels = input.bool(true, "Show price labels", group = gV)
+cUp        = input.color(#26a69a, "Bullish", group = gV)
+cDn        = input.color(#ef5350, "Bearish", group = gV)
+cEnt       = input.color(#2962ff, "Entry", group = gV)
+cDone      = input.color(#787b86, "Hit / closed", group = gV)
+
+gD = "5 · Dashboard"
+showDash = input.bool(true, "Show dashboard", group = gD)
+dashPos  = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = gD)
+
+// ═════════════════════════════ 2 · ENGINES ══════════════════════════════════
+atrRisk = ta.atr(atrRiskLen)
+
+// Supertrend (built-in: direction is -1 in an uptrend, +1 in a downtrend)
+[stLine, stDir] = ta.supertrend(stFactor, stAtrLen)
+bool stLong  = ta.change(stDir) < 0
+bool stShort = ta.change(stDir) > 0
+
+// UT Bot style ATR trailing stop
+float nLoss = utKey * ta.atr(utPer)
+var float utTrail = na
+utTrail := close > nz(utTrail[1], 0) and close[1] > nz(utTrail[1], 0) ? math.max(nz(utTrail[1]), close - nLoss) : close < nz(utTrail[1], 0) and close[1] < nz(utTrail[1], 0) ? math.min(nz(utTrail[1]), close + nLoss) : close > nz(utTrail[1], 0) ? close - nLoss : close + nLoss
+bool utLong  = ta.crossover(close, utTrail)
+bool utShort = ta.crossunder(close, utTrail)
+
+// EMA crossover
+emaF = ta.ema(close, emaFastLen)
+emaS = ta.ema(close, emaSlowLen)
+bool emaLong  = ta.crossover(emaF, emaS)
+bool emaShort = ta.crossunder(emaF, emaS)
+
+// ═════════════════════════════ 3 · FILTERS ══════════════════════════════════
+emaFilt = ta.ema(close, emaFLen)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+bool adxOk = not useAdx or adxVal >= adxMin
+
+bool longFilt  = (not useEmaF or close > emaFilt) and adxOk
+bool shortFilt = (not useEmaF or close < emaFilt) and adxOk
+bool longFiltPrev  = (not useEmaF or close[1] > emaFilt[1]) and (not useAdx or nz(adxVal[1], 0) >= adxMin)
+bool shortFiltPrev = (not useEmaF or close[1] < emaFilt[1]) and (not useAdx or nz(adxVal[1], 0) >= adxMin)
+
+// engine state (trend direction), not just the flip bar
+bool stateLong  = engine == "Supertrend" ? stDir == -1 : engine == "UT Bot (ATR trail)" ? close > nz(utTrail, close) : emaF > emaS
+bool stateShort = engine == "Supertrend" ? stDir == 1  : engine == "UT Bot (ATR trail)" ? close < nz(utTrail, close) : emaF < emaS
+
+// trigger = first bar where engine state and filters agree (covers flips and re-entries)
+bool trigLong  = stateLong  and longFilt  and not (stateLong[1]  and longFiltPrev)
+bool trigShort = stateShort and shortFilt and not (stateShort[1] and shortFiltPrev)
+
+// ═══════════════════════════ 4 · TRADE STATE ════════════════════════════════
+var int   dir        = 0
+var bool  live       = false
+var float ent        = na
+var float slLvl      = na
+var float tp1L       = na
+var float tp2L       = na
+var float tp3L       = na
+var float riskAmt    = na
+var bool  hit1       = false
+var bool  hit2       = false
+var bool  hit3       = false
+var int   lastSigBar = na
+
+var line  lEnt = na
+var line  lSl  = na
+var line  lT1  = na
+var line  lT2  = na
+var line  lT3  = na
+var label bEnt = na
+var label bSl  = na
+var label bT1  = na
+var label bT2  = na
+var label bT3  = na
+
+// ════════════════════════════ 5 · SIGNALS ═══════════════════════════════════
+bool coolOk = na(lastSigBar) or bar_index - lastSigBar >= cooldown
+bool confOk = not closeOnly or barstate.isconfirmed
+
+bool goLong  = trigLong  and coolOk and confOk and (not live or dir != 1)
+bool goShort = trigShort and coolOk and confOk and (not live or dir != -1)
+
+// ═════════════════════════ 6 · STOP / TARGET LEVELS ═════════════════════════
+float engStopLong  = engine == "Supertrend" ? nz(stLine, close - atrRisk * slAtr) : engine == "UT Bot (ATR trail)" ? nz(utTrail, close - atrRisk * slAtr) : close - atrRisk * slAtr
+float engStopShort = engine == "Supertrend" ? nz(stLine, close + atrRisk * slAtr) : engine == "UT Bot (ATR trail)" ? nz(utTrail, close + atrRisk * slAtr) : close + atrRisk * slAtr
+
+float longStop  = stopMode == "ATR stop" ? low - atrRisk * slAtr  : stopMode == "Engine stop" ? engStopLong  : ta.lowest(low, swingLook)
+float shortStop = stopMode == "ATR stop" ? high + atrRisk * slAtr : stopMode == "Engine stop" ? engStopShort : ta.highest(high, swingLook)
+
+longStop  := math.min(longStop,  close - atrRisk * 0.1)
+shortStop := math.max(shortStop, close + atrRisk * 0.1)
+
+// keep the three R multiples in ascending order whatever the user types
+float rr1 = math.min(r1, math.min(r2, r3))
+float rr3 = math.max(r1, math.max(r2, r3))
+float rr2 = r1 + r2 + r3 - rr1 - rr3
+
+// ═══════════════════════════ 7 · OPEN / MANAGE ══════════════════════════════
+if goLong or goShort
+    // clear the previous trade's drawings
+    if not na(lEnt)
+        line.delete(lEnt)
+        line.delete(lSl)
+        line.delete(lT1)
+        line.delete(lT2)
+        line.delete(lT3)
+        lEnt := na
+        lSl  := na
+        lT1  := na
+        lT2  := na
+        lT3  := na
+    if not na(bEnt)
+        label.delete(bEnt)
+        label.delete(bSl)
+        label.delete(bT1)
+        label.delete(bT2)
+        label.delete(bT3)
+        bEnt := na
+        bSl  := na
+        bT1  := na
+        bT2  := na
+        bT3  := na
+
+    dir        := goLong ? 1 : -1
+    live       := true
+    hit1       := false
+    hit2       := false
+    hit3       := false
+    lastSigBar := bar_index
+    ent        := close
+    slLvl      := goLong ? longStop : shortStop
+    riskAmt    := math.abs(ent - slLvl)
+    tp1L       := goLong ? ent + riskAmt * rr1 : ent - riskAmt * rr1
+    tp2L       := goLong ? ent + riskAmt * rr2 : ent - riskAmt * rr2
+    tp3L       := goLong ? ent + riskAmt * rr3 : ent - riskAmt * rr3
+
+    if showLines
+        lEnt := line.new(bar_index, ent,   bar_index + lineExt, ent,   color = cEnt, width = 2)
+        lSl  := line.new(bar_index, slLvl, bar_index + lineExt, slLvl, color = cDn,  style = line.style_dashed, width = 1)
+        lT1  := line.new(bar_index, tp1L,  bar_index + lineExt, tp1L,  color = cUp,  style = line.style_dashed, width = 1)
+        lT2  := line.new(bar_index, tp2L,  bar_index + lineExt, tp2L,  color = cUp,  style = line.style_dotted, width = 1)
+        lT3  := line.new(bar_index, tp3L,  bar_index + lineExt, tp3L,  color = cUp,  style = line.style_dotted, width = 1)
+
+        if showLabels
+            bEnt := label.new(bar_index + lineExt, ent,   "ENTRY " + str.tostring(ent,   format.mintick), style = label.style_label_left, color = color.new(cEnt, 15), textcolor = color.white, size = size.small)
+            bSl  := label.new(bar_index + lineExt, slLvl, "SL "    + str.tostring(slLvl, format.mintick) + " (" + str.tostring(slAtr, "#.#") + "×ATR)", style = label.style_label_left, color = color.new(cDn, 15), textcolor = color.white, size = size.small)
+            bT1  := label.new(bar_index + lineExt, tp1L,  "TP1 "   + str.tostring(tp1L,  format.mintick), style = label.style_label_left, color = color.new(cUp, 15), textcolor = color.white, size = size.small)
+            bT2  := label.new(bar_index + lineExt, tp2L,  "TP2 "   + str.tostring(tp2L,  format.mintick), style = label.style_label_left, color = color.new(cUp, 15), textcolor = color.white, size = size.small)
+            bT3  := label.new(bar_index + lineExt, tp3L,  "TP3 "   + str.tostring(tp3L,  format.mintick), style = label.style_label_left, color = color.new(cUp, 15), textcolor = color.white, size = size.small)
+
+// target / stop tracking
+if live
+    if dir == 1
+        if not hit1 and high >= tp1L
+            hit1 := true
+        if not hit2 and high >= tp2L
+            hit2 := true
+        if not hit3 and high >= tp3L
+            hit3 := true
+        if low <= slLvl
+            live := false
+    else
+        if not hit1 and low <= tp1L
+            hit1 := true
+        if not hit2 and low <= tp2L
+            hit2 := true
+        if not hit3 and low <= tp3L
+            hit3 := true
+        if high >= slLvl
+            live := false
+
+// keep open trades trailing to the right, freeze closed ones
+if showLines and not na(lEnt)
+    if live
+        line.set_x2(lEnt, bar_index + lineExt)
+        line.set_x2(lSl,  bar_index + lineExt)
+        line.set_x2(lT1,  bar_index + lineExt)
+        line.set_x2(lT2,  bar_index + lineExt)
+        line.set_x2(lT3,  bar_index + lineExt)
+        if showLabels and not na(bEnt)
+            label.set_x(bEnt, bar_index + lineExt)
+            label.set_x(bSl,  bar_index + lineExt)
+            label.set_x(bT1,  bar_index + lineExt)
+            label.set_x(bT2,  bar_index + lineExt)
+            label.set_x(bT3,  bar_index + lineExt)
+    else if line.get_x2(lEnt) > bar_index
+        line.set_x2(lEnt, bar_index)
+        line.set_x2(lSl,  bar_index)
+        line.set_x2(lT1,  bar_index)
+        line.set_x2(lT2,  bar_index)
+        line.set_x2(lT3,  bar_index)
+        if showLabels and not na(bEnt)
+            label.set_x(bEnt, bar_index)
+            label.set_x(bSl,  bar_index)
+            label.set_x(bT1,  bar_index)
+            label.set_x(bT2,  bar_index)
+            label.set_x(bT3,  bar_index)
+        line.set_color(lSl, color.new(cDone, 0))
+        line.set_color(lEnt, color.new(cDone, 0))
+
+// refresh label text with hit markers
+if showLabels and not na(bEnt)
+    label.set_text(bT1, "TP1 " + str.tostring(tp1L, format.mintick) + (hit1 ? " ✓" : ""))
+    label.set_text(bT2, "TP2 " + str.tostring(tp2L, format.mintick) + (hit2 ? " ✓" : ""))
+    label.set_text(bT3, "TP3 " + str.tostring(tp3L, format.mintick) + (hit3 ? " ✓" : ""))
+    label.set_text(bSl,  "SL "  + str.tostring(slLvl, format.mintick) + (not live ? " ✗" : ""))
+
+// ═════════════════════════════ 8 · PLOTS ════════════════════════════════════
+plot(showSt and engine == "Supertrend" ? stLine : na, "Supertrend", color = stDir == -1 ? cUp : cDn, linewidth = 2)
+plot(showSt and engine == "UT Bot (ATR trail)" ? utTrail : na, "UT trailing stop", color = close > utTrail ? cUp : cDn, linewidth = 2)
+plot(showSt and engine == "EMA crossover" ? emaF : na, "EMA fast", color = color.new(cUp, 0), linewidth = 1)
+plot(showSt and engine == "EMA crossover" ? emaS : na, "EMA slow", color = color.new(cDn, 0), linewidth = 1)
+
+plotshape(goLong and showArrows, "Buy", style = shape.labelup, location = location.belowbar,
+     color = cUp, textcolor = color.white, text = "BUY", size = size.tiny)
+plotshape(goShort and showArrows, "Sell", style = shape.labeldown, location = location.abovebar,
+     color = cDn, textcolor = color.white, text = "SELL", size = size.tiny)
+
+bgcolor(goLong ? color.new(cUp, 90) : goShort ? color.new(cDn, 90) : na, title = "Signal flash")
+
+// ═════════════════════════════ 9 · ALERTS ═══════════════════════════════════
+alertcondition(goLong,  "TPP · BUY",  "TPP BUY {{ticker}} {{interval}} @ {{close}}")
+alertcondition(goShort, "TPP · SELL", "TPP SELL {{ticker}} {{interval}} @ {{close}}")
+alertcondition(hit1 and not hit1[1], "TPP · Target 1 hit", "TPP target 1 reached on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(hit2 and not hit2[1], "TPP · Target 2 hit", "TPP target 2 reached on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(hit3 and not hit3[1], "TPP · Target 3 hit", "TPP target 3 reached on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(not live and live[1], "TPP · Stop hit", "TPP stop-loss hit on {{ticker}} {{interval}} @ {{close}}")
+
+// ═════════════════════════════ 10 · DASHBOARD ═══════════════════════════════
+posWhere = dashPos == "Top left" ? position.top_left : dashPos == "Bottom right" ? position.bottom_right : dashPos == "Bottom left" ? position.bottom_left : position.top_right
+
+var table dash = table.new(posWhere, 2, 9, bgcolor = color.new(#131722, 15),
+     border_color = color.new(#434651, 0), border_width = 1, frame_color = color.new(#434651, 0), frame_width = 1)
+
+cellTxt(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+if barstate.islast and showDash
+    color  trendCol = stDir == -1 ? cUp : cDn
+    string trendTxt = stDir == -1 ? "BULLISH" : "BEARISH"
+    string posTxt   = not live ? "Flat / closed" : dir == 1 ? "LONG" : "SHORT"
+    color  posCol   = not live ? cDone : dir == 1 ? cUp : cDn
+    string statTxt  = not live ? "—" : hit3 ? "TP3 hit" : hit2 ? "TP2 hit" : hit1 ? "TP1 hit" : "Running"
+    color  statCol  = hit1 ? cUp : cDn
+
+    table.cell(dash, 0, 0, "TREND PILOT PRO", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 1, "Engine",   text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 1, engine,     text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 2, "Trend",    text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 2, trendTxt,   text_color = trendCol, text_size = size.small)
+    table.cell(dash, 0, 3, "Position", text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 3, posTxt,     text_color = posCol, text_size = size.small)
+    table.cell(dash, 0, 4, "Entry",    text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 4, cellTxt(ent), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 5, "Stop",     text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 5, cellTxt(slLvl), text_color = cDn, text_size = size.small)
+    table.cell(dash, 0, 6, "Targets",  text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 6, cellTxt(tp1L) + " / " + cellTxt(tp2L) + " / " + cellTxt(tp3L), text_color = cUp, text_size = size.small)
+    table.cell(dash, 0, 7, "Status",   text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 7, statTxt,    text_color = statCol, text_size = size.small)
+    table.cell(dash, 0, 8, "R : R",    text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 8, str.tostring(rr1, "#.#") + " / " + str.tostring(rr2, "#.#") + " / " + str.tostring(rr3, "#.#"), text_color = #b2b5be, text_size = size.small)

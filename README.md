@@ -1,87 +1,114 @@
-# Smart Structure Pro — TradingView indicator
+# TradingView indicators
 
-A single-file Pine Script indicator that draws the classic "smart money" toolkit
-that most trading reels demo, and gives you clean entry/exit levels:
+Two self-contained Pine Script v6 indicators, ready to paste into TradingView.
+Both are **one file, no dependencies**, work on any symbol/timeframe, and ship with
+alerts.
 
-| Feature | What it does |
+| File | What it is | Best for |
+|---|---|---|
+| [`indicators/TrendPilotPro.pine`](indicators/TrendPilotPro.pine) | **Trend Pilot Pro** — buy/sell arrows + entry / stop-loss / TP1-TP2-TP3 lines on the chart | trend following, scalping, swing entries |
+| [`indicators/SmartStructurePro.pine`](indicators/SmartStructurePro.pine) | **Smart Structure Pro** — BOS/CHoCH structure, order blocks, fair value gaps, signals | smart-money / price-action trading |
+
+---
+
+# 1 · Trend Pilot Pro  ⭐ (the "arrows + target lines" style)
+
+![Trend Pilot Pro preview](preview/TrendPilotPro-preview.png)
+
+*Preview rendered from the indicator's own logic on synthetic data
+(`preview/render_trend_preview.py`).*
+
+### What you get on the chart
+
+- **BUY / SELL arrows** when the trend engine and filters agree.
+- **Blue entry line** at the signal close.
+- **Red dashed stop-loss line** (ATR, engine stop or swing stop — your choice).
+- **TP1 / TP2 / TP3 lines** at 1R / 2R / 3R (any multiple you want), with
+  price labels at the right edge; each target shows a `✓` once price reaches it,
+  and the stop label shows `✗` if the trade is stopped out.
+- **Trailing trend line** (Supertrend / UT Bot trail / EMA pair) plotted behind price.
+- **Dashboard**: engine, trend, position, entry, stop, targets, status, R:R.
+- **6 alerts**: BUY, SELL, TP1, TP2, TP3, stop hit.
+
+### Signal engines (Settings → 1 · Signal engine)
+
+| Engine | Character |
 |---|---|
-| **BOS / CHoCH** | Marks market-structure breaks. `BOS` = continuation, `CHoCH` = change of character (possible reversal). |
-| **Order blocks** | On every structure break it highlights the last opposite-colour candle before the move — the classic supply/demand zone. Auto-deleted when price closes through them. |
-| **Fair value gaps (FVG)** | 3-candle imbalance, drawn as a box and auto-removed once filled. Has a minimum-size filter in ATR units so you don't get noise. |
-| **BUY / SELL arrows** | Fires when a structure break, an EMA trend filter and (optionally) a fresh FVG agree. |
-| **ATR stop / target** | Dashed stop-loss and take-profit lines from the last signal (stop = ATR × 1.5, target = risk × 2 by default). |
-| **Dashboard** | Small table showing trend, last event, price vs EMA and the last signal. |
-| **Alerts** | 4 ready-made alerts: BUY, SELL, bullish break, bearish break. |
+| **Supertrend** (default, ATR 10 × 3.0) | Classic workhorse. Clean trends, some whipsaw in ranges. |
+| **UT Bot (ATR trail)** | Tighter trailing stop, good for intraday scalps. |
+| **EMA crossover** (21 / 55) | Slowest and smoothest. Good on higher timeframes. |
+
+A signal fires on the **first bar where the engine direction and the filters agree**
+— so it catches both fresh flips and clean re-entries after a pullback, not only the
+exact flip candle.
+
+### Filters (Settings → 2 · Filters)
+
+- **EMA direction filter** (default ON, 200 EMA) — longs only above, shorts only below.
+- **ADX filter** (default OFF, minimum 20) — skips dead, choppy markets.
+- **Cooldown** (default 3 bars) — stops one signal turning into five.
+- **Signals on bar close only** (default ON) — arrows never appear/reappear mid-candle,
+  i.e. **no repainting**.
+
+### Stop & targets (Settings → 3)
+
+- `ATR stop` (default): stop = worst of signal bar / previous bar ± 1.5 × ATR.
+- `Engine stop`: uses the Supertrend or UT Bot line itself.
+- `Swing stop`: highest high / lowest low of the last *n* bars.
+- Targets are **R multiples** of that stop, so risk is always defined before entry.
+
+Recommended starting points: 1m-5m → Supertrend ATR 10 × 2.0, targets 1/1.5/2R;
+15m-1h → defaults; 4h-1D → EMA cross, targets 2/3/5R.
+
+### Alerts
+
+Right-click chart → **Add alert** → Condition = *Trend Pilot Pro* → pick the event.
+Use **Once per bar close** for the BUY/SELL alerts.
+
+---
+
+# 2 · Smart Structure Pro
 
 ![Smart Structure Pro preview](preview/SmartStructurePro-preview.png)
 
-*Preview rendered from the indicator's own logic on synthetic data
-(`preview/render_preview.py`) — your live chart will look the same, just with real prices.*
+| Feature | What it does |
+|---|---|
+| **BOS / CHoCH** | Structure breaks. `BOS` = continuation, `CHoCH` = change of character. |
+| **Order blocks** | Last opposite-colour candle before a break; deleted when price closes through. |
+| **Fair value gaps** | 3-candle imbalance boxes with a minimum-size filter (× ATR). |
+| **BUY / SELL arrows** | Structure break + EMA filter + optional fresh FVG. |
+| **ATR stop / target** | Dashed lines from the last signal. |
+| **Dashboard + 4 alerts** | Trend, last event, price vs EMA, last signal. |
 
-File: [`indicators/SmartStructurePro.pine`](indicators/SmartStructurePro.pine)
-
----
-
-## Install (2 minutes)
-
-1. Open TradingView → **Pine Editor** (bottom panel).
-2. Click **Open → New blank indicator**.
-3. Delete everything, then paste the whole contents of `indicators/SmartStructurePro.pine`.
-4. Click **Save**, give it a name, then **Add to chart**.
-5. Open the indicator's **Settings** gear to tune it (6 sections, all documented with tooltips).
-
-## Recommended starting settings
-
-| Timeframe | Swing length | Notes |
-|---|---|---|
-| 1m – 5m (scalping) | 3 – 4 | Faster signals, more noise. Keep EMA filter ON. |
-| 15m – 1h (intraday) | 5 (default) | Balanced. |
-| 4h – 1D (swing) | 8 – 12 | Fewer, stronger zones. |
-
-- **Signal on** — `All breaks` gives more trades; `CHoCH only` only takes reversals.
-- **EMA trend filter** — leave ON for trending markets, turn OFF in tight ranges.
-- **Only signal at a fresh FVG** — the strictest, highest-quality mode.
-
-## Alerts
-
-Right-click the chart → **Add alert** → *Condition* = **Smart Structure Pro** →
-pick `SSP · BUY` / `SSP · SELL` / `SSP · Bullish BOS/CHoCH` / `SSP · Bearish BOS/CHoCH`.
-Set the trigger to **Once per bar close** so a signal can't flip after the candle closes.
-
-## How it works (short version)
-
-1. A **pivot high/low** is confirmed after `swing length` bars on each side.
-2. A close above the last pivot high (below the last pivot low) is a **structure break**.
-   If the previous trend was the opposite direction it's labelled **CHoCH**, otherwise **BOS**.
-3. On a break the script looks back up to `search depth` bars for the last opposite-colour
-   candle and stores it as an **order block**.
-4. Separately, any candle whose low is above the high of two bars ago (or the mirror
-   for bearish) is a **fair value gap**, provided the gap is at least `min gap × ATR`.
-5. A **signal** = structure break **+** trend filter **+** optional fresh FVG.
-   From there the ATR stop/target are projected.
-
-### About repainting
-
-Structure breaks are evaluated on **bar close**, and pivots are only confirmed after
-`swing length` bars — so the arrows do **not** repaint, but they do arrive
-`swing length` bars after the actual swing point. That lag is the price of a
-non-repainting pivot. Lower the swing length if you want faster arrows.
-
-## Disclaimers
-
-This is an educational tool, not financial advice or a guarantee of profit. Past
-patterns do not repeat reliably. Test on a demo account first, and always size
-positions from your own risk rules (the ATR stop is a starting point, not a promise).
+Same install steps, same non-repainting behaviour (bar-close evaluation, pivots
+confirmed after `swing length` bars).
 
 ---
 
-### Was your reel something else?
+## Install (2 minutes, either indicator)
 
-The Instagram link (`instagram.com/reel/DfUi0luT9Qz`) cannot be opened from this
+1. TradingView → **Pine Editor** (bottom panel) → **Open → New blank indicator**.
+2. Delete the template, paste the whole file.
+3. **Save** → **Add to chart**.
+4. Tune it with the gear icon (every input has a tooltip).
+
+## Notes & honesty
+
+- These are **indicators**, not strategies: they don't backtest in the Strategy
+  Tester and they don't place trades. Alerts are how you automate them.
+- No indicator predicts the future. Both use closed-bar data, so arrows are stable,
+  but that also means they appear at bar close, not before.
+- Nothing here is financial advice. Test on a demo account, and size positions from
+  your own risk rules — the ATR stop is a starting point, not a promise.
+
+---
+
+### About the Instagram reel
+
+The reel link (`instagram.com/reel/DfUi0luT9Qz`) can't be opened from the build
 environment — Instagram returns HTTP 403 to anything that isn't a logged-in browser,
-so the exact indicator in the video couldn't be viewed. This build covers the most
-common "reel indicator" stack (BOS/CHoCH + order blocks + FVG + buy/sell arrows).
-If the reel showed something different — e.g. **Supertrend/UT Bot**, **VWAP bands +
-volume**, **RSI divergence**, **liquidity sweeps / equal highs–lows**, **a scalping
-EMA-ribbon system** or **options-style CE/PE signals** — say which one (or drop a
-screenshot of the chart) and this file will be reworked to match it.
+so the exact indicator in the video couldn't be watched. Based on the follow-up
+answers (*trend / buy-sell arrows* + *lines with target levels*), **Trend Pilot Pro**
+was built to match that style. If the reel used a specific engine (HalfTrend, a
+particular Supertrend setting, an EMA ribbon, RSI-based arrows…), or you can share
+a screenshot of the chart, the script can be matched exactly.
