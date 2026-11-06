@@ -1,0 +1,327 @@
+//@version=6
+// ─────────────────────────────────────────────────────────────────────────────
+//  SMART STRUCTURE PRO
+//  Market Structure (BOS / CHoCH) → Order Blocks → Fair Value Gaps → Signals
+//  Works on any symbol and any timeframe. Educational tool, not financial advice.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Smart Structure Pro [BOS·CHoCH·OB·FVG]", "SSP", overlay = true,
+     max_boxes_count = 200, max_lines_count = 200, max_labels_count = 200)
+
+// ══════════════════════════════ 1 · INPUTS ══════════════════════════════════
+gS = "1 · Market structure"
+swingLen  = input.int(5, "Swing length", minval = 1, maxval = 50, group = gS,
+     tooltip = "Bars required on each side of a pivot. Larger = bigger swings, fewer but stronger signals.")
+showStr   = input.bool(true, "Draw BOS / CHoCH", group = gS)
+strExtend = input.int(20, "Structure line extension (bars)", minval = 0, maxval = 200, group = gS)
+cBull     = input.color(#26a69a, "Bullish colour", group = gS)
+cBear     = input.color(#ef5350, "Bearish colour", group = gS)
+cMit      = input.color(#787b86, "Mitigated colour", group = gS)
+
+gO = "2 · Order blocks"
+showOB   = input.bool(true, "Draw order blocks", group = gO)
+obLook   = input.int(12, "Search depth (bars)", minval = 2, maxval = 60, group = gO,
+     tooltip = "How far back to look for the last opposite-colour candle before the break.")
+obExtend = input.int(40, "Extend right (bars)", minval = 5, maxval = 500, group = gO)
+maxOB    = input.int(6, "Max order blocks kept", minval = 1, maxval = 20, group = gO)
+
+gF = "3 · Fair value gaps"
+showFVG   = input.bool(true, "Draw fair value gaps", group = gF)
+fvgMinAtr = input.float(0.15, "Minimum gap size (× ATR)", minval = 0.0, maxval = 3.0, step = 0.05, group = gF)
+fvgExtend = input.int(40, "Extend right (bars)", minval = 5, maxval = 500, group = gF)
+maxFVG    = input.int(6, "Max FVGs kept", minval = 1, maxval = 20, group = gF)
+dropMit   = input.bool(true, "Delete gap once filled", group = gF)
+
+gSig = "4 · Signals"
+showSig  = input.bool(true, "Show BUY / SELL arrows", group = gSig)
+sigMode  = input.string("All breaks", "Signal on", options = ["All breaks", "CHoCH only"], group = gSig)
+useEma   = input.bool(true, "EMA trend filter", group = gSig)
+emaLen   = input.int(200, "EMA length", minval = 5, maxval = 1000, group = gSig)
+showEma  = input.bool(true, "Plot EMA", group = gSig)
+needFVG  = input.bool(false, "Only signal at a fresh FVG", group = gSig)
+
+gR = "5 · Risk levels"
+showRisk = input.bool(true, "Draw ATR stop / target", group = gR)
+atrLen   = input.int(14, "ATR length", minval = 2, maxval = 100, group = gR)
+slMult   = input.float(1.5, "Stop = ATR ×", minval = 0.1, maxval = 10.0, step = 0.1, group = gR)
+rrMult   = input.float(2.0, "Target = risk ×", minval = 0.5, maxval = 20.0, step = 0.1, group = gR)
+riskExt  = input.int(30, "Extend right (bars)", minval = 1, maxval = 300, group = gR)
+
+gD = "6 · Dashboard"
+showDash = input.bool(true, "Show dashboard", group = gD)
+dashPos  = input.string("Top right", "Position", options = ["Top right", "Top left", "Bottom right", "Bottom left"], group = gD)
+
+// ══════════════════════════════ 2 · BASE DATA ═══════════════════════════════
+ema = ta.ema(close, emaLen)
+atr = ta.atr(atrLen)
+
+// ══════════════════════════ 3 · MARKET STRUCTURE ════════════════════════════
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+
+var float lastPH    = na
+var int   lastPHbar = na
+var bool  phBroken  = true
+var float lastPL    = na
+var int   lastPLbar = na
+var bool  plBroken  = true
+
+var int    trend      = 0
+var string lastEvent  = "—"
+
+if not na(ph)
+    lastPH    := ph
+    lastPHbar := bar_index - swingLen
+    phBroken  := false
+
+if not na(pl)
+    lastPL    := pl
+    lastPLbar := bar_index - swingLen
+    plBroken  := false
+
+bool bullBreak = not na(lastPH) and not phBroken and close > lastPH
+bool bearBreak = not na(lastPL) and not plBroken and close < lastPL
+bool wasBear   = trend == -1
+bool wasBull   = trend == 1
+
+// ═════════════════════ 4 · ORDER-BLOCK / FVG STORAGE ════════════════════════
+var array<box>   bullOB    = array.new<box>()
+var array<float> bullOBbot = array.new<float>()
+var array<box>   bearOB    = array.new<box>()
+var array<float> bearOBtop = array.new<float>()
+var array<box>   bullFVG   = array.new<box>()
+var array<float> bullFVGbot = array.new<float>()
+var array<box>   bearFVG   = array.new<box>()
+var array<float> bearFVGtop = array.new<float>()
+
+// ══════════════════════════ 5 · BULLISH BREAK ═══════════════════════════════
+if bullBreak
+    string evName = wasBear ? "CHoCH" : "BOS"
+    phBroken  := true
+    trend     := 1
+    lastEvent := evName + " ▲"
+
+    if showStr
+        line.new(lastPHbar, lastPH, bar_index + strExtend, lastPH, color = cBull, width = 2)
+        label.new(bar_index, lastPH, evName, style = label.style_label_down,
+             color = color.new(cBull, 85), textcolor = cBull, size = size.small)
+
+    if showOB
+        int   obBar = na
+        float obTop = na
+        float obBot = na
+        for i = 1 to obLook
+            if close[i] < open[i]
+                obBar := bar_index - i
+                obTop := high[i]
+                obBot := low[i]
+                break
+        if not na(obBar)
+            box b = box.new(obBar, obTop, bar_index + obExtend, obBot,
+                 border_color = color.new(cBull, 30), bgcolor = color.new(cBull, 88))
+            array.push(bullOB, b)
+            array.push(bullOBbot, obBot)
+            if array.size(bullOB) > maxOB
+                box.delete(array.shift(bullOB))
+                array.shift(bullOBbot)
+
+// ══════════════════════════ 6 · BEARISH BREAK ═══════════════════════════════
+if bearBreak
+    string evName = wasBull ? "CHoCH" : "BOS"
+    plBroken  := true
+    trend     := -1
+    lastEvent := evName + " ▼"
+
+    if showStr
+        line.new(lastPLbar, lastPL, bar_index + strExtend, lastPL, color = cBear, width = 2)
+        label.new(bar_index, lastPL, evName, style = label.style_label_up,
+             color = color.new(cBear, 85), textcolor = cBear, size = size.small)
+
+    if showOB
+        int   obBar = na
+        float obTop = na
+        float obBot = na
+        for i = 1 to obLook
+            if close[i] > open[i]
+                obBar := bar_index - i
+                obTop := high[i]
+                obBot := low[i]
+                break
+        if not na(obBar)
+            box b = box.new(obBar, obTop, bar_index + obExtend, obBot,
+                 border_color = color.new(cBear, 30), bgcolor = color.new(cBear, 88))
+            array.push(bearOB, b)
+            array.push(bearOBtop, obTop)
+            if array.size(bearOB) > maxOB
+                box.delete(array.shift(bearOB))
+                array.shift(bearOBtop)
+
+// ═══════════════════════════ 7 · FAIR VALUE GAPS ════════════════════════════
+float gapBullSize = low - high[2]
+float gapBearSize = low[2] - high
+bool  bullGap     = not na(high[2]) and gapBullSize > 0 and gapBullSize >= atr * fvgMinAtr
+bool  bearGap     = not na(low[2]) and gapBearSize > 0 and gapBearSize >= atr * fvgMinAtr
+
+if showFVG and bullGap
+    box b = box.new(bar_index - 2, low, bar_index + fvgExtend, high[2],
+         border_color = color.new(cBull, 50), bgcolor = color.new(cBull, 85))
+    array.push(bullFVG, b)
+    array.push(bullFVGbot, high[2])
+    if array.size(bullFVG) > maxFVG
+        box.delete(array.shift(bullFVG))
+        array.shift(bullFVGbot)
+
+if showFVG and bearGap
+    box b = box.new(bar_index - 2, low[2], bar_index + fvgExtend, high,
+         border_color = color.new(cBear, 50), bgcolor = color.new(cBear, 85))
+    array.push(bearFVG, b)
+    array.push(bearFVGtop, low[2])
+    if array.size(bearFVG) > maxFVG
+        box.delete(array.shift(bearFVG))
+        array.shift(bearFVGtop)
+
+// ═══════════════════ 8 · EXTEND / MITIGATE ZONES ═══════════════════════════
+// Reverse `while` loops keep index shifting safe when elements are removed.
+int iBO = array.size(bullOB) - 1
+while iBO >= 0
+    box   bo = array.get(bullOB, iBO)
+    float boBot = array.get(bullOBbot, iBO)
+    if close < boBot
+        box.delete(bo)
+        array.remove(bullOB, iBO)
+        array.remove(bullOBbot, iBO)
+    else
+        box.set_right(bo, bar_index + obExtend)
+    iBO -= 1
+
+int iBE = array.size(bearOB) - 1
+while iBE >= 0
+    box   be = array.get(bearOB, iBE)
+    float beTop = array.get(bearOBtop, iBE)
+    if close > beTop
+        box.delete(be)
+        array.remove(bearOB, iBE)
+        array.remove(bearOBtop, iBE)
+    else
+        box.set_right(be, bar_index + obExtend)
+    iBE -= 1
+
+int iFB = array.size(bullFVG) - 1
+while iFB >= 0
+    box   fb = array.get(bullFVG, iFB)
+    float fbBot = array.get(bullFVGbot, iFB)
+    if close < fbBot
+        if dropMit
+            box.delete(fb)
+            array.remove(bullFVG, iFB)
+            array.remove(bullFVGbot, iFB)
+        else
+            box.set_bgcolor(fb, color.new(cMit, 92))
+            box.set_border_color(fb, color.new(cMit, 60))
+            box.set_right(fb, bar_index)
+    else
+        box.set_right(fb, bar_index + fvgExtend)
+    iFB -= 1
+
+int iFR = array.size(bearFVG) - 1
+while iFR >= 0
+    box   fr = array.get(bearFVG, iFR)
+    float frTop = array.get(bearFVGtop, iFR)
+    if close > frTop
+        if dropMit
+            box.delete(fr)
+            array.remove(bearFVG, iFR)
+            array.remove(bearFVGtop, iFR)
+        else
+            box.set_bgcolor(fr, color.new(cMit, 92))
+            box.set_border_color(fr, color.new(cMit, 60))
+            box.set_right(fr, bar_index)
+    else
+        box.set_right(fr, bar_index + fvgExtend)
+    iFR -= 1
+
+// ═════════════════════════════ 9 · SIGNALS ══════════════════════════════════
+bool freshBullGap = bullGap or bullGap[1]
+bool freshBearGap = bearGap or bearGap[1]
+
+bool modeOkLong  = sigMode == "All breaks" or wasBear
+bool modeOkShort = sigMode == "All breaks" or wasBull
+bool emaOkLong   = not useEma or close > ema
+bool emaOkShort  = not useEma or close < ema
+bool gapOkLong   = not needFVG or freshBullGap
+bool gapOkShort  = not needFVG or freshBearGap
+
+bool longSig  = bullBreak and modeOkLong  and emaOkLong  and gapOkLong
+bool shortSig = bearBreak and modeOkShort and emaOkShort and gapOkShort
+
+// ═══════════════════════════ 10 · RISK LEVELS ═══════════════════════════════
+var int   sigDir  = 0
+var int   sigBar  = na
+var float sigSL   = na
+var float sigTP   = na
+var line  slLine  = na
+var line  tpLine  = na
+
+if longSig
+    sigDir := 1
+    sigBar := bar_index
+    sigSL  := math.min(low, low[1]) - atr * slMult
+    sigTP  := close + (close - sigSL) * rrMult
+
+if shortSig
+    sigDir := -1
+    sigBar := bar_index
+    sigSL  := math.max(high, high[1]) + atr * slMult
+    sigTP  := close - (sigSL - close) * rrMult
+
+if (longSig or shortSig) and showRisk
+    if not na(slLine)
+        line.delete(slLine)
+        line.delete(tpLine)
+    slLine := line.new(sigBar, sigSL, bar_index + riskExt, sigSL, color = cBear, style = line.style_dashed, width = 1)
+    tpLine := line.new(sigBar, sigTP, bar_index + riskExt, sigTP, color = cBull, style = line.style_dashed, width = 1)
+
+if showRisk and not na(slLine)
+    line.set_x2(slLine, bar_index + riskExt)
+    line.set_x2(tpLine, bar_index + riskExt)
+
+// ═════════════════════════════ 11 · PLOTS ═══════════════════════════════════
+plot(useEma and showEma ? ema : na, "Trend EMA", color = color.new(#ffb74d, 0), linewidth = 1)
+
+plotshape(longSig and showSig, "Buy", style = shape.triangleup, location = location.belowbar,
+     color = cBull, size = size.small, text = "BUY", textcolor = cBull)
+plotshape(shortSig and showSig, "Sell", style = shape.triangledown, location = location.abovebar,
+     color = cBear, size = size.small, text = "SELL", textcolor = cBear)
+
+// ═════════════════════════════ 12 · ALERTS ══════════════════════════════════
+alertcondition(longSig,  "SSP · BUY",  "SSP BUY {{ticker}} {{interval}} @ {{close}}")
+alertcondition(shortSig, "SSP · SELL", "SSP SELL {{ticker}} {{interval}} @ {{close}}")
+alertcondition(bullBreak, "SSP · Bullish BOS/CHoCH", "SSP bullish structure break on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(bearBreak, "SSP · Bearish BOS/CHoCH", "SSP bearish structure break on {{ticker}} {{interval}} @ {{close}}")
+
+// ════════════════════════════ 13 · DASHBOARD ════════════════════════════════
+posWhere = dashPos == "Top left" ? position.top_left : dashPos == "Bottom right" ? position.bottom_right : dashPos == "Bottom left" ? position.bottom_left : position.top_right
+
+var table dash = table.new(posWhere, 2, 5, bgcolor = color.new(#131722, 15),
+     border_color = color.new(#434651, 0), border_width = 1, frame_color = color.new(#434651, 0), frame_width = 1)
+
+if barstate.islast and showDash
+    color trendCol = trend == 1 ? cBull : trend == -1 ? cBear : cMit
+    string trendTxt = trend == 1 ? "BULLISH" : trend == -1 ? "BEARISH" : "NEUTRAL"
+    string emaTxt   = na(ema) ? "—" : close > ema ? "Above" : "Below"
+    string sigTxt   = sigDir == 1 ? "LONG" : sigDir == -1 ? "SHORT" : "None"
+    color sigCol    = sigDir == 1 ? cBull : sigDir == -1 ? cBear : cMit
+
+    table.cell(dash, 0, 0, "SMART STRUCTURE", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 0, timeframe.period, text_color = color.white, text_size = size.small)
+
+    table.cell(dash, 0, 1, "Trend",        text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 1, trendTxt,       text_color = trendCol, text_size = size.small)
+
+    table.cell(dash, 0, 2, "Last event",   text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 2, lastEvent,      text_color = trendCol, text_size = size.small)
+
+    table.cell(dash, 0, 3, "Close vs EMA", text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 3, emaTxt,         text_color = color.white, text_size = size.small)
+
+    table.cell(dash, 0, 4, "Last signal",  text_color = #b2b5be, text_size = size.small)
+    table.cell(dash, 1, 4, sigTxt,         text_color = sigCol, text_size = size.small)
